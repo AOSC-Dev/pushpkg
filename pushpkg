@@ -176,13 +176,13 @@ def rsync_non_noarch_file(upload_url: str, branch: str, identity_file=None, verb
 
     command = [
         "rsync",
-        "--delay-updates",
         "--recursive",
         "--mkpath",
         "--links",
         "--omit-dir-times",
         "--partial",
-        "--compress",
+        "--delay-updates",
+        "--temp-dir=/mirror/.debs-incoming/",
         "--human-readable",
         "--progress",
         "--exclude",
@@ -224,13 +224,13 @@ def rsync_noarch_file(upload_url: str, branch: str, identity_file=None, verbose=
 
     command = [
         "rsync",
-	"--delay-updates",
         "--recursive",
         "--mkpath",
         "--links",
         "--omit-dir-times",
         "--partial",
-        "--compress",
+        "--delay-updates",
+        "--temp-dir=/mirror/.debs-incoming/",
         "--human-readable",
         "--progress",
         "--include",
