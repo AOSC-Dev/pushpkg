@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import socket
 import subprocess
 import sys
 
@@ -68,6 +69,9 @@ def main():
     parser.add_argument(
         "--allow-marking-upload-done-to-fail", action="store_true", help="Allow marking upload as done to fail"
     )
+    parser.add_argument(
+        "--max-retries", type=int, default=3, help="Maximum number of retries for rsync operations"
+    )
     args = parser.parse_args()
     username = args.username
     branch = args.branch
@@ -87,9 +91,44 @@ def main():
         sys.exit(1)
     delete_junk()
     upload_url = make_upload_url(username, branch, component, args.retro, args.host)
-    rsync_non_noarch_file(upload_url, branch, args.identity_file, args.verbose, args.ipv6, args.ipv4, args.compress)
-    if have_noarch_files():
-        rsync_noarch_file(upload_url, branch, args.identity_file, args.verbose, args.force_push_noarch_package, args.ipv6, args.ipv4, args.compress)
+    default_ip_ver = get_default_ip_version(args.host)
+    specific_ip_ver = args.ipv4 or args.ipv6
+    if not specific_ip_ver:
+        if default_ip_ver == "ipv6":
+            last_ipv4 = True
+            print("[+] Detected host prefers IPv6. Using IPv6.")
+        elif default_ip_ver == "ipv4":
+            last_ipv4 = False
+            print("[+] Detected host prefers IPv4. Using IPv4.")
+    else:
+        if args.ipv4:
+            ipv4 = True
+            ipv6=False
+        if args.ipv6:
+            ipv4 = False
+            ipv6 = True
+
+    for attempt in range(args.max_retries):
+        if not specific_ip_ver:
+            if last_ipv4:
+                ipv4 = False
+                ipv6 = True
+                print("[+] Switching to IPv6 for this attempt.")
+            else:
+                ipv4 = True
+                ipv6 = False
+                print("[+] Switching to IPv4 for this attempt.")
+            last_ipv4 = not last_ipv4
+        try:
+            rsync_non_noarch_file(upload_url, branch, args.identity_file, args.verbose, ipv6, ipv4, args.compress)
+            if have_noarch_files():
+                rsync_noarch_file(upload_url, branch, args.identity_file, args.verbose, args.force_push_noarch_package, ipv6, ipv4, args.compress)
+            break
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+            if attempt < args.max_retries - 1:
+                print(f"[!] Upload failed (attempt {attempt + 1}/{args.max_retries}), retrying...")
+            else:
+                raise e
     else:
         print("[+] There is no noarch packages. Skipping.")
     if args.delete:
@@ -111,6 +150,14 @@ def detect_and_ask(type_name: str, arg: str) -> str:
 
 def make_upload_url(username: str, branch: str, component: str, is_retro: bool, host: str) -> str:
     return f"{username}@{host}:/mirror/debs{'-retro' if is_retro else ''}/pool/{branch}/{component}/"
+
+
+def print_size(total_size):
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if total_size < 1024.0:
+            print(f"[+] Size: {total_size:.2f} {unit}")
+            return
+        total_size /= 1024.0
 
 
 def delete_junk():
@@ -154,6 +201,17 @@ def mark_upload_done(username: str, host: str, identity_file=None, verbose=False
 
 def rsync_non_noarch_file(upload_url: str, branch: str, identity_file=None, verbose=False, ipv6=False, ipv4=False, compress=False):
     print("[+] Uploading arch-specific packages ...")
+
+    total_size = 0
+    for root, dirs, files in os.walk("./debs"):
+        for file in files:
+            if file.endswith(".deb") and not file.endswith("_noarch.deb"):
+                total_size += os.path.getsize(os.path.join(root, file))
+    estimated_time = total_size / (500 * 1024)  # 按 500KB/s 计算
+    if estimated_time < 30:
+        estimated_time = 30  # 最少 30 秒，避免小文件瞬间被掐
+    print(f"[+] Estimated upload size: {total_size} bytes, upload time limit is set to: {estimated_time:.2f} seconds")
+
     flags = []
     ssh_option = ""
 
@@ -193,7 +251,7 @@ def rsync_non_noarch_file(upload_url: str, branch: str, identity_file=None, verb
         upload_url,
     ]
 
-    subprocess.check_call(command)
+    subprocess.check_call(command, timeout=estimated_time)
 
 
 def have_noarch_files() -> bool:
@@ -203,6 +261,16 @@ def have_noarch_files() -> bool:
 
 def rsync_noarch_file(upload_url: str, branch: str, identity_file=None, verbose=False, force_push_noarch_package=False, ipv6=False, ipv4=False, compress=False):
     print("[+] Uploading noarch packages ...")
+    total_size = 0
+    for root, dirs, files in os.walk("./debs"):
+        for file in files:
+            if file.endswith("_noarch.deb"):
+                total_size += os.path.getsize(os.path.join(root, file))
+    estimated_time = total_size / (500 * 1024)  # 按 500KB/s 计算
+    if estimated_time < 30:
+        estimated_time = 30  # 最少 30 秒，避免小文件瞬间被掐
+    print(f"[+] Estimated upload size: {total_size} bytes, upload time limit is set to: {estimated_time:.2f} seconds")
+
     flags = []
     ssh_option = ""
 
@@ -242,7 +310,7 @@ def rsync_noarch_file(upload_url: str, branch: str, identity_file=None, verbose=
         upload_url,
     ]
 
-    subprocess.check_call(command)
+    subprocess.check_call(command, timeout=estimated_time)
 
 
 def clean_output_directory():
@@ -250,6 +318,15 @@ def clean_output_directory():
     debs_path = os.path.abspath("./debs")
     subprocess.check_call(["sudo", "rm", "-rv", debs_path])
 
+def get_default_ip_version(host: str) -> str:
+    address = socket.getaddrinfo(host, None, socket.AF_UNSPEC)[0]
+    if address[0] == socket.AF_INET6:
+        return "ipv6"
+    elif address[0] == socket.AF_INET:
+        return "ipv4"
+    else:
+        return "unknown"
+    
 
 if __name__ == "__main__":
     main()
