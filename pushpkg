@@ -4,7 +4,7 @@ import argparse
 import os
 import subprocess
 import sys
-
+import tempfile
 
 def main():
     parser = argparse.ArgumentParser(
@@ -86,15 +86,16 @@ def main():
         print("[!!!] debs is not a directory!")
         sys.exit(1)
     delete_junk()
+    partial_dir = f"/mirror/.debs-incoming/pushpkg.{branch}_{next(tempfile._get_candidate_names())}"
     upload_url = make_upload_url(username, branch, component, args.retro, args.host)
-    rsync_non_noarch_file(upload_url, branch, args.identity_file, args.verbose, args.ipv6, args.ipv4, args.compress)
+    rsync_non_noarch_file(upload_url, branch, partial_dir, args.identity_file, args.verbose, args.ipv6, args.ipv4, args.compress)
     if have_noarch_files():
-        rsync_noarch_file(upload_url, branch, args.identity_file, args.verbose, args.force_push_noarch_package, args.ipv6, args.ipv4, args.compress)
+        rsync_noarch_file(upload_url, branch, partial_dir, args.identity_file, args.verbose, args.force_push_noarch_package, args.ipv6, args.ipv4, args.compress)
     else:
         print("[+] There is no noarch packages. Skipping.")
     if args.delete:
         clean_output_directory()
-    mark_upload_done(username, args.host, args.identity_file, args.verbose, args.allow_marking_upload_done_to_fail, args.ipv6, args.ipv4, args.compress)
+    mark_upload_done(username, partial_dir, args.host, args.identity_file, args.verbose, args.allow_marking_upload_done_to_fail, args.ipv6, args.ipv4, args.compress)
 
 
 def detect_and_ask(type_name: str, arg: str) -> str:
@@ -130,8 +131,8 @@ def delete_junk():
     subprocess.check_call(command)
 
 
-def mark_upload_done(username: str, host: str, identity_file=None, verbose=False, allow_fail=False, ipv6=False, ipv4=False, compress=False):
-    command = ["ssh", f"{username}@{host}", "touch", "/mirror/.updated"]
+def mark_upload_done(username: str, partial_dir: str, host: str, identity_file=None, verbose=False, allow_fail=False, ipv6=False, ipv4=False, compress=False):
+    command = ["ssh", f"{username}@{host}", "touch", "/mirror/.updated", "&&" ,"rm" , "-r", partial_dir]
     if verbose:
         command.insert(1, "-v")
     if identity_file:
@@ -152,7 +153,7 @@ def mark_upload_done(username: str, host: str, identity_file=None, verbose=False
             raise err
 
 
-def rsync_non_noarch_file(upload_url: str, branch: str, identity_file=None, verbose=False, ipv6=False, ipv4=False, compress=False):
+def rsync_non_noarch_file(upload_url: str, branch: str, partial_dir: str, identity_file=None, verbose=False, ipv6=False, ipv4=False, compress=False):
     print("[+] Uploading arch-specific packages ...")
     flags = []
     ssh_option = ""
@@ -183,7 +184,7 @@ def rsync_non_noarch_file(upload_url: str, branch: str, identity_file=None, verb
         "--partial",
         "--delay-updates",
         "--temp-dir=/mirror/.debs-incoming/",
-        "--partial-dir=/mirror/.debs-incoming/",
+        f"--partial-dir={partial_dir}",
         "--human-readable",
         "--progress",
         "--exclude",
@@ -201,7 +202,7 @@ def have_noarch_files() -> bool:
     return len(output) > 1
 
 
-def rsync_noarch_file(upload_url: str, branch: str, identity_file=None, verbose=False, force_push_noarch_package=False, ipv6=False, ipv4=False, compress=False):
+def rsync_noarch_file(upload_url: str, branch: str, partial_dir: str, identity_file=None, verbose=False, force_push_noarch_package=False, ipv6=False, ipv4=False, compress=False):
     print("[+] Uploading noarch packages ...")
     flags = []
     ssh_option = ""
@@ -232,7 +233,7 @@ def rsync_noarch_file(upload_url: str, branch: str, identity_file=None, verbose=
         "--partial",
         "--delay-updates",
         "--temp-dir=/mirror/.debs-incoming/",
-        "--partial-dir=/mirror/.debs-incoming/",
+        f"--partial-dir={partial_dir}",
         "--human-readable",
         "--progress",
         "--include",
