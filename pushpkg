@@ -132,7 +132,7 @@ def delete_junk():
 
 
 def mark_upload_done(username: str, partial_dir: str, host: str, identity_file=None, verbose=False, allow_fail=False, ipv6=False, ipv4=False, compress=False):
-    command = ["ssh", f"{username}@{host}", "touch", "/mirror/.updated", "&&" ,"rm" , "-r", partial_dir]
+    command = ["ssh", f"{username}@{host}", "touch", "/mirror/.updated", "&&" ,"rm" , "-rf", partial_dir]
     if verbose:
         command.insert(1, "-v")
     if identity_file:
